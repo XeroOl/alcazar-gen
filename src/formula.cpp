@@ -85,13 +85,25 @@ std::vector<int> getEdgeFields(int width, int height)
 }
 
 
-
 typedef Minisat::vec<Minisat::Lit> Clause;
+
+enum class Orientation2 {
+    // NW NE    Direction
+    // ===================
+    // 0  0  -> S
+    // 0  1  -> E
+    // 1  0  -> W
+    // 1  1  -> N
+    NW, NE
+};
 
 
 void buildFormula(int width, int height, SatSolver& s, std::map<std::pair<int, int>, Minisat::Lit>& fp2lit, std::map<Wall, Minisat::Lit>& w2lit)
 {
     const int pathLength = width * height;
+
+    std::map<std::pair<Coordinates, Orientation2>, Minisat::Lit> node2lit;
+    std::map<Wall, Minisat::Lit> edge2lit;
 
     for (int field = 0; field < pathLength; ++field)
     {
@@ -104,52 +116,174 @@ void buildFormula(int width, int height, SatSolver& s, std::map<std::pair<int, i
     for (auto wall: allWalls(width, height))
     {
         w2lit[wall] = Minisat::mkLit(s.newVar());
+        edge2lit[wall] = Minisat::mkLit(s.newVar());
+        s.addClause(~w2lit[wall], edge2lit[wall]);
     }
 
-    /*
-    // every field must have at least two open walls
-    for (int field = 0; field < pathLength; ++field)
+    std::set<Coordinates> allCoordinates;
+    for (int x = 0; x < width; ++x)
     {
-        const auto c = f2c(field, width);
-        const auto walln = w2lit[Wall(c, Orientation::H)];
-        const auto walle = w2lit[Wall(c.offset(1, 0), Orientation::V)];
-        const auto walls = w2lit[Wall(c.offset(0, 1), Orientation::H)];
-        const auto wallw = w2lit[Wall(c, Orientation::V)];
+        for (int y = 0; y < height; ++y)
+        {
+            allCoordinates.insert({x, y});
+        }
+    }
 
+    std::set<Coordinates> nodeCoordinates;
+    for (int x = 0; x < width; ++x)
+    {
+        for (int y = 0; y < height; ++y)
+        {
+            nodeCoordinates.insert({x, y});
+            node2lit[{{x, y}, Orientation2::NW}] = Minisat::mkLit(s.newVar());
+            node2lit[{{x, y}, Orientation2::NE}] = Minisat::mkLit(s.newVar());
+        }
+    }
+
+    // Each coordinate has exactly 2 walls and 2 open
+    for (auto c: allCoordinates) {
+        const auto walln = edge2lit[Wall(c, Orientation::H)];
+        const auto wallw = edge2lit[Wall(c, Orientation::V)];
+        const auto walls = edge2lit[Wall(c.offset(0, 1), Orientation::H)];
+        const auto walle = edge2lit[Wall(c.offset(1, 0), Orientation::V)];
+
+        // Each coordinate has at least 2 open
         s.addClause(~walln, ~walle, ~walls);
         s.addClause(~walln, ~walle, ~wallw);
         s.addClause(~walln, ~walls, ~wallw);
         s.addClause(~walle, ~walls, ~wallw);
-    }
-    */
 
-    /*
+        // Each coordinate has at least 2 walls
+        s.addClause(walln, walle, walls);
+        s.addClause(walln, walle, wallw);
+        s.addClause(walln, walls, wallw);
+        s.addClause(walle, walls, wallw);
+    }
+
     // corners must have at least one wall
     // top left
     {
-        const auto wall1 = w2lit[Wall({0, 0}, Orientation::Horizontal)];
-        const auto wall2 = w2lit[Wall({0, 0}, Orientation::Vertical)];
+        const auto wall1 = edge2lit[Wall({0, 0}, Orientation::H)];
+        const auto wall2 = edge2lit[Wall({0, 0}, Orientation::V)];
         s.addClause(wall1, wall2);
     }
     // top right
     {
-        const auto wall1 = w2lit[Wall({width-1, 0}, Orientation::Horizontal)];
-        const auto wall2 = w2lit[Wall({width, 0}, Orientation::Vertical)];
+        const auto wall1 = edge2lit[Wall({width-1, 0}, Orientation::H)];
+        const auto wall2 = edge2lit[Wall({width, 0}, Orientation::V)];
         s.addClause(wall1, wall2);
     }
     // bottom left
     {
-        const auto wall1 = w2lit[Wall({0, height}, Orientation::Horizontal)];
-        const auto wall2 = w2lit[Wall({0, height-1}, Orientation::Vertical)];
+        const auto wall1 = edge2lit[Wall({0, height}, Orientation::H)];
+        const auto wall2 = edge2lit[Wall({0, height-1}, Orientation::V)];
         s.addClause(wall1, wall2);
     }
     // bottom right
     {
-        const auto wall1 = w2lit[Wall({width-1, height}, Orientation::Horizontal)];
-        const auto wall2 = w2lit[Wall({width, height-1}, Orientation::Vertical)];
+        const auto wall1 = edge2lit[Wall({width-1, height}, Orientation::H)];
+        const auto wall2 = edge2lit[Wall({width, height-1}, Orientation::V)];
         s.addClause(wall1, wall2);
     }
-    */
+
+    for (auto nc: nodeCoordinates)
+    {
+        const auto nw = node2lit[{nc, Orientation2::NW}];
+        const auto ne = node2lit[{nc, Orientation2::NE}];
+        const auto sw = ~node2lit[{nc, Orientation2::NE}];
+        const auto se = ~node2lit[{nc, Orientation2::NW}];
+        const auto walln = edge2lit[Wall(nc.offset(1, 0), Orientation::V)];
+        const auto wallw = edge2lit[Wall(nc.offset(0, 1), Orientation::H)];
+        const auto walle = edge2lit[Wall(nc.offset(1, 1), Orientation::H)];
+        const auto walls = edge2lit[Wall(nc.offset(1, 1), Orientation::V)];
+
+        // every node must be oriented along a wall
+        s.addClause(~nw, ~ne, walln);
+        s.addClause(~sw, ~se, walls);
+        s.addClause(~ne, ~se, walle);
+        s.addClause(~nw, ~sw, wallw);
+
+        // every node must be away from a corner
+        s.addClause(walln, walle, ~ne);
+        s.addClause(walls, walle, ~se);
+        s.addClause(walln, wallw, ~nw);
+        s.addClause(walls, wallw, ~sw);
+    }
+
+    // every horizontal non-border wall
+    for (int y = 1; y <= height - 1; ++y)
+    {
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const auto wall  = edge2lit[Wall({x, y  }, Orientation::H)];
+            const auto walln = edge2lit[Wall({x, y-1}, Orientation::H)];
+            const auto walls = edge2lit[Wall({x, y+1}, Orientation::H)];
+            const auto nodew_ne =  node2lit[{{x-1, y-1}, Orientation2::NE}];
+            const auto nodew_se = ~node2lit[{{x-1, y-1}, Orientation2::NW}];
+            const auto nodee_nw =  node2lit[{{x, y-1}, Orientation2::NW}];
+            const auto nodee_sw = ~node2lit[{{x, y-1}, Orientation2::NE}];
+
+            // nodes don't orient toward eachother
+            { Clause c; c.push(~nodew_ne); c.push(~nodew_se); c.push(~nodee_nw); c.push(~nodee_sw); s.addClause(c); }
+
+            // at least one opposing node points away from every wall
+            s.addClause(~nodew_ne, ~nodee_nw, ~walln);
+            s.addClause(~nodew_se, ~nodee_sw, ~walls);
+
+            // every wall is covered by a node
+            s.addClause(~wall, nodew_ne, nodee_nw);
+            s.addClause(~wall, nodew_ne, nodee_sw);
+            s.addClause(~wall, nodew_se, nodee_nw);
+            s.addClause(~wall, nodew_se, nodee_sw);
+        }
+    }
+
+    // every vertical non-border wall
+    for (int y = 1; y < height - 1; ++y)
+    {
+        for (int x = 1; x <= width - 1; ++x)
+        {
+            const auto wall  = edge2lit[Wall({x,   y}, Orientation::V)];
+            const auto wallw = edge2lit[Wall({x-1, y}, Orientation::V)];
+            const auto walle = edge2lit[Wall({x+1, y}, Orientation::V)];
+            const auto noden_se = ~node2lit[{{x-1, y-1}, Orientation2::NW}];
+            const auto noden_sw = ~node2lit[{{x-1, y-1}, Orientation2::NE}];
+            const auto nodes_ne =  node2lit[{{x-1, y}, Orientation2::NE}];
+            const auto nodes_nw =  node2lit[{{x-1, y}, Orientation2::NW}];
+
+            // nodes don't orient toward eachother
+            { Clause c; c.push(~noden_se); c.push(~noden_sw); c.push(~nodes_ne); c.push(~nodes_nw); s.addClause(c); }
+
+            // at least one opposing node points away from every wall
+            s.addClause(~noden_se, ~nodes_ne, ~walle);
+            s.addClause(~noden_sw, ~nodes_nw, ~wallw);
+
+            // every wall is covered by a node
+            s.addClause(~wall, noden_se, nodes_ne);
+            s.addClause(~wall, noden_se, nodes_nw);
+            s.addClause(~wall, noden_sw, nodes_ne);
+            s.addClause(~wall, noden_sw, nodes_nw);
+        }
+    }
+
+    // every non-border cell
+    for (int y = 1; y < height - 1; ++y)
+    {
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const auto a = ~node2lit[{{x,   y  }, Orientation2::NW}];
+            const auto b =  node2lit[{{x,   y+1}, Orientation2::NE}];
+            const auto c = ~node2lit[{{x+1, y  }, Orientation2::NE}];
+            const auto d =  node2lit[{{x+1, y+1}, Orientation2::NW}];
+            s.addClause(~a, ~b, ~c);
+            s.addClause(~a, ~b, ~d);
+            s.addClause(~a, ~c, ~d);
+            s.addClause(~b, ~c, ~d);
+        }
+    }
+
+    // TODO edge escape rules
+    // TODO 2 edge boundaries (with parity)
 
     // every field must appear on the path
     // (f@0 + f@1 + ... + f@P-1) for all f
@@ -208,14 +342,6 @@ void buildFormula(int width, int height, SatSolver& s, std::map<std::pair<int, i
     }
 
     // consecutive path positions only between neighbours
-    std::set<Coordinates> allCoordinates;
-    for (int x = 0; x < width; ++x)
-    {
-        for (int y = 0; y < height; ++y)
-        {
-            allCoordinates.insert({x, y});
-        }
-    }
     for (auto c: allCoordinates)
     {
         std::vector<Coordinates> neighbours;
